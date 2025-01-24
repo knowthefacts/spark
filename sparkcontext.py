@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 class StorageHandler(ABC):
     @abstractmethod
-    def save_json(self, data: dict, file_name: str) -> None:
+    def save_records(self, records: list, file_name: str) -> None:
         pass
 
 class LocalStorageHandler(StorageHandler):
@@ -14,12 +14,13 @@ class LocalStorageHandler(StorageHandler):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def save_json(self, data: dict, file_name: str) -> None:
+    def save_records(self, records: list, file_name: str) -> None:
         file_path = os.path.join(self.output_dir, file_name)
         if not os.path.exists(file_path):
             with open(file_path, 'w') as f:
-                json.dump(data, f)
-                f.write('\n')
+                for record in records:
+                    json.dump(record, f)
+                    f.write('\n')
 
 class S3StorageHandler(StorageHandler):
     def __init__(self, bucket: str, prefix: str):
@@ -27,15 +28,16 @@ class S3StorageHandler(StorageHandler):
         self.bucket = bucket
         self.prefix = prefix
 
-    def save_json(self, data: dict, file_name: str) -> None:
+    def save_records(self, records: list, file_name: str) -> None:
         key = f"{self.prefix}/{file_name}"
         try:
             self.s3.head_object(Bucket=self.bucket, Key=key)
         except:
+            content = '\n'.join(json.dumps(record) for record in records)
             self.s3.put_object(
                 Bucket=self.bucket,
                 Key=key,
-                Body=json.dumps(data) + '\n'
+                Body=content + '\n'
             )
 
 class EvaluationAnalyzer:
@@ -156,9 +158,13 @@ class EvaluationAnalyzer:
                     file_name = f"{entity['id']}_{entity['conversation']['id']}.jsonl"
                     records = self.process_evaluation_record(entity)
                     
-                    for record in records:
-                        self.storage.save_json(record, file_name)
-                        total_records += 1
+                    # Save all records for this evaluation in one batch
+                    if not os.path.exists(file_name):
+                        with open(file_name, 'w') as f:
+                            for record in records:
+                                json.dump(record, f)
+                                f.write('\n')
+                            total_records += len(records)
 
                 page_number += 1
 
