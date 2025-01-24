@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 
 class StorageHandler(ABC):
     @abstractmethod
-    def save_records(self, records: list, file_name: str) -> None:
+    def save_records(self, records: list, file_path: str) -> None:
         pass
 
 class LocalStorageHandler(StorageHandler):
@@ -16,11 +16,11 @@ class LocalStorageHandler(StorageHandler):
 
     def save_records(self, records: list, file_name: str) -> None:
         file_path = os.path.join(self.output_dir, file_name)
-        if not os.path.exists(file_path):
-            with open(file_path, 'w') as f:
-                for record in records:
-                    json.dump(record, f)
-                    f.write('\n')
+        # Write the file fresh each time
+        with open(file_path, 'w') as f:
+            for record in records:
+                json.dump(record, f)
+                f.write('\n')
 
 class S3StorageHandler(StorageHandler):
     def __init__(self, bucket: str, prefix: str):
@@ -30,15 +30,12 @@ class S3StorageHandler(StorageHandler):
 
     def save_records(self, records: list, file_name: str) -> None:
         key = f"{self.prefix}/{file_name}"
-        try:
-            self.s3.head_object(Bucket=self.bucket, Key=key)
-        except:
-            content = '\n'.join(json.dumps(record) for record in records)
-            self.s3.put_object(
-                Bucket=self.bucket,
-                Key=key,
-                Body=content + '\n'
-            )
+        content = '\n'.join(json.dumps(record) for record in records)
+        self.s3.put_object(
+            Bucket=self.bucket,
+            Key=key,
+            Body=content + '\n'
+        )
 
 class EvaluationAnalyzer:
     def __init__(self, storage_handler: StorageHandler):
@@ -53,36 +50,28 @@ class EvaluationAnalyzer:
     def get_active_evaluators(self, start_time: str, end_time: str) -> list:
         active_evaluators = []
         page_number = 1
-
+        
         while True:
-            try:
-                url = (f"{self.base_url}/quality/evaluators/activity"
-                      f"?startTime={start_time}"
-                      f"&endTime={end_time}"
-                      f"&pageSize={self.page_size}"
-                      f"&pageNumber={page_number}")
-
-                response = requests.get(url, headers=self.headers)
-                response.raise_for_status()
-                data = response.json()
-
-                if not data.get('entities', []):
-                    break
-
-                for entity in data['entities']:
-                    if entity.get('numEvaluationsCompleted', 0) > 0:
-                        evaluator_id = entity['evaluator']['id']
-                        active_evaluators.append(evaluator_id)
-
-                page_number += 1
-
-            except requests.exceptions.RequestException as e:
-                print(f"API request failed: {e}")
+            url = (f"{self.base_url}/quality/evaluators/activity"
+                  f"?startTime={start_time}"
+                  f"&endTime={end_time}"
+                  f"&pageSize={self.page_size}"
+                  f"&pageNumber={page_number}")
+            
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data.get('entities', []):
                 break
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                break
-
+            
+            for entity in data['entities']:
+                if entity.get('numEvaluationsCompleted', 0) > 0:
+                    evaluator_id = entity['evaluator']['id']
+                    active_evaluators.append(evaluator_id)
+            
+            page_number += 1
+        
         return active_evaluators
 
     def process_evaluation_record(self, entity: dict) -> list:
@@ -138,42 +127,28 @@ class EvaluationAnalyzer:
         page_number = 1
 
         while True:
-            try:
-                url = (f"{self.base_url}/quality/evaluations/query"
-                      f"?startTime={start_time}"
-                      f"&endTime={end_time}"
-                      f"&pageSize={self.page_size}"
-                      f"&pageNumber={page_number}"
-                      f"&evaluatorUserId={evaluator_id}"
-                      f"&expandAnswerTotalScores=true")
+            url = (f"{self.base_url}/quality/evaluations/query"
+                  f"?startTime={start_time}"
+                  f"&endTime={end_time}"
+                  f"&pageSize={self.page_size}"
+                  f"&pageNumber={page_number}"
+                  f"&evaluatorUserId={evaluator_id}"
+                  f"&expandAnswerTotalScores=true")
 
-                response = requests.get(url, headers=self.headers)
-                response.raise_for_status()
-                data = response.json()
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            data = response.json()
 
-                if not data.get('entities', []):
-                    break
-
-                for entity in data['entities']:
-                    file_name = f"{entity['id']}_{entity['conversation']['id']}.jsonl"
-                    records = self.process_evaluation_record(entity)
-                    
-                    # Save all records for this evaluation in one batch
-                    if not os.path.exists(file_name):
-                        with open(file_name, 'w') as f:
-                            for record in records:
-                                json.dump(record, f)
-                                f.write('\n')
-                            total_records += len(records)
-
-                page_number += 1
-
-            except requests.exceptions.RequestException as e:
-                print(f"API request failed for evaluator {evaluator_id}: {e}")
+            if not data.get('entities', []):
                 break
-            except Exception as e:
-                print(f"Unexpected error for evaluator {evaluator_id}: {e}")
-                break
+
+            for entity in data['entities']:
+                file_name = f"{entity['id']}_{entity['conversation']['id']}.jsonl"
+                records = self.process_evaluation_record(entity)
+                self.storage.save_records(records, file_name)
+                total_records += len(records)
+
+            page_number += 1
 
         return total_records
 
@@ -190,14 +165,9 @@ def main():
         }
     }
 
-    # Initialize storage handler
-    if CONFIG['storage']['type'] == 's3':
-        storage = S3StorageHandler(
-            CONFIG['storage']['s3_bucket'],
-            CONFIG['storage']['s3_prefix']
-        )
-    else:
-        storage = LocalStorageHandler(CONFIG['storage']['local_path'])
+    storage = (S3StorageHandler(CONFIG['storage']['s3_bucket'], CONFIG['storage']['s3_prefix']) 
+              if CONFIG['storage']['type'] == 's3' 
+              else LocalStorageHandler(CONFIG['storage']['local_path']))
 
     analyzer = EvaluationAnalyzer(storage)
     analyzer.set_bearer_token(CONFIG['bearer_token'])
@@ -207,14 +177,12 @@ def main():
         end_time=CONFIG['end_time']
     )
 
-    total_records = 0
     for evaluator_id in evaluator_ids:
-        records = analyzer.get_evaluations_data(
+        analyzer.get_evaluations_data(
             evaluator_id=evaluator_id,
             start_time=CONFIG['start_time'],
             end_time=CONFIG['end_time']
         )
-        total_records += records
 
 if __name__ == "__main__":
     main()
