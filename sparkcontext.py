@@ -79,32 +79,55 @@ class GenesysProcessor:
         return {f"{prefix}_{k}": v for k, v in d.items()}
 
     def process_question_groups(self, form_entity: Dict):
-        form_id = form_entity.get('id')
-        detailed_form = self.fetch_form_detail(form_id)
-        question_groups = detailed_form.get('questionGroups', [])
-        answer_options_data = []
+        try:
+            form_id = form_entity.get('id')
+            logger.info(f"Processing form: {form_id}")
 
-        for qg in question_groups:
-            qg_data = self.prefix_dict_keys(qg, 'questiongroups')
-            qg_data['formid'] = form_id
-            
-            questions = qg.pop('questiongroups_questions', [])
-            
-            for question in questions:
-                q_data = self.prefix_dict_keys(question, 'questions')
-                answer_options = question.pop('questions_answerOptions', [])
-                combined_data = {**qg_data, **q_data}
+            detailed_form = self.fetch_form_detail(form_id)
+            logger.info(f"Fetched detailed form data for {form_id}")
+
+            # Get question groups directly from the response
+            question_groups = detailed_form.get('questionGroups', [])
+            logger.info(f"Found {len(question_groups)} question groups")
+
+            answer_options_data = []
+
+            for qg in question_groups:
+                # Keep original questions before prefixing
+                questions = qg.get('questions', [])
                 
-                for ao in answer_options:
-                    ao_data = self.prefix_dict_keys(ao, 'answeroptions')
-                    record = {**combined_data, **ao_data}
-                    answer_options_data.append(record)
+                # Prefix question group attributes
+                qg_data = self.prefix_dict_keys({k: v for k, v in qg.items() if k != 'questions'}, 'questiongroups')
+                qg_data['formid'] = form_id
+                
+                logger.info(f"Processing {len(questions)} questions in group {qg.get('id')}")
+                
+                for question in questions:
+                    # Keep original answer options before prefixing
+                    answer_options = question.get('answerOptions', [])
+                    
+                    # Prefix question attributes
+                    q_data = self.prefix_dict_keys({k: v for k, v in question.items() if k != 'answerOptions'}, 'questions')
+                    combined_data = {**qg_data, **q_data}
+                    
+                    logger.info(f"Processing {len(answer_options)} answer options for question {question.get('id')}")
+                    
+                    for ao in answer_options:
+                        ao_data = self.prefix_dict_keys(ao, 'answeroptions')
+                        record = {**combined_data, **ao_data}
+                        answer_options_data.append(record)
 
-        if answer_options_data:
-            filename = f"questiongroups_{form_id}.jsonl"
-            jsonl_content = '\n'.join(json.dumps(item) for item in answer_options_data)
-            self.storage_handler.save(jsonl_content, filename)
-            logger.info(f"Saved question groups data for form {form_id}")
+            if answer_options_data:
+                filename = f"questiongroups_{form_id}.jsonl"
+                jsonl_content = '\n'.join(json.dumps(item) for item in answer_options_data)
+                saved_path = self.storage_handler.save(jsonl_content, filename)
+                logger.info(f"Saved {len(answer_options_data)} records to {saved_path}")
+            else:
+                logger.warning(f"No answer options data found for form {form_id}")
+                
+        except Exception as e:
+            logger.error(f"Error processing question groups for form {form_id}: {str(e)}")
+            raise
 
     def process_entities(self, data: Dict) -> List[Dict]:
         processed_entities = []
