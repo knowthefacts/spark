@@ -128,7 +128,9 @@ class GenesysProcessor:
 
     def save_to_jsonl(self, entities: List[Dict], output_file: str) -> str:
         jsonl_content = '\n'.join(json.dumps(entity) for entity in entities)
-        return self.storage_handler.save(jsonl_content, output_file)
+        output_path = self.storage_handler.save(jsonl_content, output_file)
+        logger.info(f"Saved form data to {output_path}")
+        return output_path
 
 def main():
     BASE_API_URL = "https://api.mypurecloud.com/api/v2"
